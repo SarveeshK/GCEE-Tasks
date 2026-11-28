@@ -12,12 +12,21 @@ _JSON_BLOCK_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
 
 
 def extract_json(raw_text: str) -> Any:
-    """Safely parses JSON even if the model wraps it in markdown code fences."""
+    """Safely parses JSON even if the model wraps it in markdown fences or extra text."""
     text = raw_text.strip()
     match = _JSON_BLOCK_RE.search(text)
     if match:
         text = match.group(1).strip()
-    return json.loads(text)
+
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        for open_ch, close_ch in (("[", "]"), ("{", "}")):
+            start = text.find(open_ch)
+            end = text.rfind(close_ch)
+            if start != -1 and end != -1 and end > start:
+                return json.loads(text[start : end + 1])
+        raise
 
 
 class AsyncLLMClient:
@@ -33,26 +42,34 @@ class AsyncLLMClient:
             default_headers={"X-Title": "CCAC-OGMP-SLM-Pipeline"},
         )
 
-    @retry(wait=wait_exponential(min=4, max=60), stop=stop_after_attempt(6))
-    async def _call_api(self, system_prompt: str, user_prompt: str, temperature: float) -> str:
-        response = await self._client.chat.completions.create(
-            model=self.model,
-            temperature=temperature,
-            messages=[
+    @retry(wait=wait_exponential(min=2, max=30), stop=stop_after_attempt(4))
+    async def _call_api(self, system_prompt: str, user_prompt: str, temperature: float) -> Any:
+        kwargs: dict[str, Any] = {
+            "model": self.model,
+            "temperature": temperature,
+            "max_tokens": 4096,
+            "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-        )
-        return response.choices[0].message.content or ""
+        }
+        if "gpt-oss" in self.model:
+            kwargs["reasoning_effort"] = "low"
+
+        response = await self._client.chat.completions.create(**kwargs)
+        content = (response.choices[0].message.content or "").strip()
+        if not content:
+            raise ValueError("Empty response from model")
+        return extract_json(content)
 
     async def generate_json(
         self, system_prompt: str, user_prompt: str, temperature: float = 0.2
     ) -> Any:
         async with self._semaphore:
-            raw = await self._call_api(system_prompt, user_prompt, temperature)
+            result = await self._call_api(system_prompt, user_prompt, temperature)
             if self._min_delay > 0:
                 await asyncio.sleep(self._min_delay)
-            return extract_json(raw)
+            return result
 
     async def close(self) -> None:
         await self._client.close()
