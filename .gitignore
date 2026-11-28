@@ -2,3 +2,14 @@
 *.py[cod]
 .ipynb_checkpoints/
 .env
+
+# SLM-finetuning local artifacts
+AI/SLM-finetuning/.venv/
+AI/SLM-finetuning/.env
+AI/SLM-finetuning/adapters/
+
+# SLM-finetuning secrets & environment
+.env
+.venv/
+__pycache__/
+*.pyc
